@@ -2,9 +2,6 @@ import time
 import numpy as np
 import scipy.sparse as sp
 
-# ---------------------------------------------------------------
-# Форматы хранения
-# ---------------------------------------------------------------
 def dense_to_csr(A):
     """CSR: val - значения, col - номера столбцов, ptr - начала строк (длина n+1)."""
     n = A.shape[0]
@@ -31,9 +28,7 @@ def dense_to_cslr(A):
         ig.append(len(jg))
     return di, np.array(ig), np.array(jg, dtype=int), np.array(ggl), np.array(ggu)
 
-# ---------------------------------------------------------------
-# Умножение матрицы на вектор (чистый Python, списки — честное сравнение)
-# ---------------------------------------------------------------
+
 def matvec_dense(A, x):
     n = len(x)
     y = [0.0] * n
@@ -68,7 +63,7 @@ def matvec_cslr(di, ig, jg, ggl, ggu, x):
         y[i] += s
     return y
 
-# Векторизованные варианты (numpy) — для справки
+
 def matvec_csr_np(val, col, rows, x, n):
     return np.bincount(rows, weights=val * x[col], minlength=n)
 
@@ -76,9 +71,7 @@ def matvec_cslr_np(di, jg, rows_l, ggl, ggu, x, n):
     return (di * x + np.bincount(rows_l, weights=ggl * x[jg], minlength=n)
                    + np.bincount(jg, weights=ggu * x[rows_l], minlength=n))
 
-# ---------------------------------------------------------------
-# Генерация тестовых матриц
-# ---------------------------------------------------------------
+
 def gen_nonsym(n, per_row, rng):
     """Разреженная несимметричная матрица (~per_row ненулей на строку)."""
     A = np.zeros((n, n))
@@ -112,43 +105,25 @@ def best_time(f, min_total=0.2):
 
 def run(sizes=(100, 200, 500, 1000, 2000), per_row=5, seed=0):
     rng = np.random.default_rng(seed)
-    for kind, gen in [("CSR  (несимметричная)", gen_nonsym),
-                      ("CSlR (симметричный портрет)", gen_sym_portrait)]:
-        print(f"\n=== {kind}, ~{per_row} ненулей в строке ===")
-        print(f"{'n':>5s} {'nnz':>6s} {'fill,%':>7s} {'ошибка':>9s} | "
-              f"{'dense,мс':>9s} {'sparse,мс':>9s} {'ускор.':>7s} | "
-              f"{'numpy dense':>11s} {'numpy sp':>9s} {'scipy':>7s} | {'память dense/sparse'}")
-        for n in sizes:
+    print("Время умножения матрицы на вектор, мс")
+    print(f"{'n':>5s} | {'плотная':>8s} {'CSR':>7s} {'выигрыш':>8s} | "
+          f"{'плотная':>8s} {'CSlR':>7s} {'выигрыш':>8s}")
+    for n in sizes:
+        x = rng.standard_normal(n)
+        xl = x.tolist()
+        res = []
+        for gen, to_fmt, mv in [(gen_nonsym, dense_to_csr, matvec_csr),
+                                (gen_sym_portrait, dense_to_cslr, matvec_cslr)]:
             A = gen(n, per_row, rng)
-            x = rng.standard_normal(n)
-            y_ref = A @ x
-            Al, xl = A.tolist(), x.tolist()
-            nnz = np.count_nonzero(A)
-            if kind.startswith("CSR"):
-                val, col, ptr = dense_to_csr(A)
-                rows = np.repeat(np.arange(n), np.diff(ptr))
-                f_sp = lambda: matvec_csr(val, col, ptr, xl)
-                f_np = lambda: matvec_csr_np(val, col, rows, x, n)
-                mem_sp = val.nbytes + col.nbytes + ptr.nbytes
-                y_sp = np.array(f_sp())
-            else:
-                di, ig, jg, ggl, ggu = dense_to_cslr(A)
-                rows_l = np.repeat(np.arange(n), np.diff(ig))
-                f_sp = lambda: matvec_cslr(di, ig, jg, ggl, ggu, xl)
-                f_np = lambda: matvec_cslr_np(di, jg, rows_l, ggl, ggu, x, n)
-                mem_sp = sum(a.nbytes for a in (di, ig, jg, ggl, ggu))
-                y_sp = np.array(f_sp())
-            err = np.linalg.norm(y_sp - y_ref) / np.linalg.norm(y_ref)
-            S = sp.csr_matrix(A)
-            t_d  = best_time(lambda: matvec_dense(Al, xl))
-            t_s  = best_time(f_sp)
-            t_nd = best_time(lambda: A @ x)
-            t_ns = best_time(f_np)
-            t_sc = best_time(lambda: S @ x)
-            print(f"{n:5d} {nnz:6d} {100*nnz/n/n:7.2f} {err:9.1e} | "
-                  f"{t_d*1e3:9.3f} {t_s*1e3:9.3f} {t_d/t_s:7.1f} | "
-                  f"{t_nd*1e6:9.1f}мкс {t_ns*1e6:7.1f}мкс {t_sc*1e6:5.1f}мкс | "
-                  f"{A.nbytes/1024:.0f} / {mem_sp/1024:.0f} КБ")
+            fmt = to_fmt(A)
+            Al = A.tolist()
+
+            assert np.allclose(mv(*fmt, xl), A @ x), "ошибка умножения"
+            t_d = best_time(lambda: matvec_dense(Al, xl))
+            t_s = best_time(lambda: mv(*fmt, xl))
+            res += [t_d * 1e3, t_s * 1e3, t_d / t_s]
+        print(f"{n:5d} | {res[0]:8.3f} {res[1]:7.3f} {res[2]:7.1f}x | "
+              f"{res[3]:8.3f} {res[4]:7.3f} {res[5]:7.1f}x")
 
 if __name__ == "__main__":
     run()

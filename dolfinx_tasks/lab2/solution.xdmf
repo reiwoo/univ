@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<!DOCTYPE Xdmf SYSTEM "Xdmf.dtd" []>
+<Xdmf Version="3.0" xmlns:xi="https://www.w3.org/2001/XInclude">
+  <Domain>
+    <Grid Name="mesh" GridType="Uniform">
+      <Topology TopologyType="Triangle" NumberOfElements="2996" NodesPerElement="3">
+        <DataItem Dimensions="2996 3" NumberType="Int" Format="HDF">solution.h5:/Mesh/mesh/topology</DataItem>
+      </Topology>
+      <Geometry GeometryType="XY">
+        <DataItem Dimensions="1549 2" Format="HDF">solution.h5:/Mesh/mesh/geometry</DataItem>
+      </Geometry>
+    </Grid>
+    <Grid Name="cell_tags" GridType="Uniform">
+      <xi:include xpointer="xpointer(/Xdmf/Domain/Grid/Geometry)" />
+      <Topology TopologyType="Triangle" NumberOfElements="2996" NodesPerElement="3">
+        <DataItem Dimensions="2996 3" NumberType="Int" Format="HDF">solution.h5:/MeshTags/cell_tags/topology</DataItem>
+      </Topology>
+      <Attribute Name="cell_tags" AttributeType="Scalar" Center="Cell">
+        <DataItem Dimensions="2996 1" Format="HDF">solution.h5:/MeshTags/cell_tags/Values</DataItem>
+      </Attribute>
+    </Grid>
+    <Grid Name="facet_tags" GridType="Uniform">
+      <xi:include xpointer="xpointer(/Xdmf/Domain/Grid/Geometry)" />
+      <Topology TopologyType="PolyLine" NumberOfElements="164" NodesPerElement="2">
+        <DataItem Dimensions="164 2" NumberType="Int" Format="HDF">solution.h5:/MeshTags/facet_tags/topology</DataItem>
+      </Topology>
+      <Attribute Name="facet_tags" AttributeType="Scalar" Center="Cell">
+        <DataItem Dimensions="164 1" Format="HDF">solution.h5:/MeshTags/facet_tags/Values</DataItem>
+      </Attribute>
+    </Grid>
+    <Grid Name="k" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="k" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0" />
+        <Attribute Name="k" AttributeType="Scalar" Center="Cell">
+          <DataItem Dimensions="2996 1" Format="HDF">solution.h5:/Function/k/0</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+    <Grid Name="u" GridType="Collection" CollectionType="Temporal">
+      <Grid Name="u" GridType="Uniform">
+        <xi:include xpointer="xpointer(/Xdmf/Domain/Grid[@GridType='Uniform'][1]/*[self::Topology or self::Geometry])" />
+        <Time Value="0" />
+        <Attribute Name="u" AttributeType="Scalar" Center="Node">
+          <DataItem Dimensions="1549 1" Format="HDF">solution.h5:/Function/u/0</DataItem>
+        </Attribute>
+      </Grid>
+    </Grid>
+  </Domain>
+</Xdmf>

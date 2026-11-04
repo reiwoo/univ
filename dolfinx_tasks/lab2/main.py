@@ -1,92 +1,67 @@
-import dolfinx.fem.petsc
 from mpi4py import MPI
 import numpy as np
-import typing
 import ufl
+from dolfinx import default_scalar_type, fem, io
+from dolfinx.fem.petsc import LinearProblem
+from dolfinx.io import gmsh as gmshio
 
+GAMMA_L, GAMMA_R, GAMMA_B, GAMMA_T = 1, 2, 3, 4
+OMEGA_OUT, OMEGA_IN = 10, 11
+k_out, k_in = 1.0, 10.0
 
-def u_ex(mod, x):
-    return mod.sin(2 * mod.pi * x[0])
+comm = MPI.COMM_WORLD
 
-
-def setup_problem(
-    N: int,
-) -> typing.Tuple[dolfinx.fem.FunctionSpace, dolfinx.fem.Form, dolfinx.fem.Form]:
-    """Set up bilinear and linear form of the singular Poisson problem
-
-    Args:
-        N (int): Number of elements in each direction of the mesh.
-
-    Returns:
-        The function space, the bilinear form and the linear form of the problem.
-
-    """
-
-    domain = dolfinx.mesh.create_unit_square(
-        MPI.COMM_WORLD, N, N, cell_type=dolfinx.mesh.CellType.quadrilateral
-    )
-    V = dolfinx.fem.functionspace(domain, ("Lagrange", 1))
-    u = ufl.TrialFunction(V)
-    v = ufl.TestFunction(V)
-
-    x = ufl.SpatialCoordinate(domain)
-    u_exact = u_ex(ufl, x)
-    f = -ufl.div(ufl.grad(u_exact))
-    n = ufl.FacetNormal(domain)
-    g = -ufl.dot(ufl.grad(u_exact), n)
-
-    F = ufl.dot(ufl.grad(u), ufl.grad(v)) * ufl.dx
-    F += ufl.inner(g, v) * ufl.ds
-    F -= f * v * ufl.dx
-    return V, *dolfinx.fem.form(ufl.system(F))
-
-from petsc4py import PETSc
-
-nullspace = PETSc.NullSpace().create(constant=True, comm=MPI.COMM_WORLD)
-petsc_options = {
-    "ksp_error_if_not_converged": True,
-    "ksp_type": "preonly",
-    "pc_type": "lu",
-    "pc_factor_mat_solver_type": "mumps",
-    "ksp_monitor": None,
-}
-ksp = PETSc.KSP().create(MPI.COMM_WORLD)
-ksp.setOptionsPrefix("singular_direct")
-opts = PETSc.Options()
-opts.prefixPush(ksp.getOptionsPrefix())
-for key, value in petsc_options.items():
-    opts[key] = value
-ksp.setFromOptions()
-for key, value in petsc_options.items():
-    del opts[key]
-opts.prefixPop()
-V, a, L = setup_problem(40)
-A = dolfinx.fem.petsc.assemble_matrix(a)
-A.assemble()
-b = dolfinx.fem.petsc.assemble_vector(L)
-b.ghostUpdate(addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
-ksp.setOperators(A)
-assert nullspace.test(A)
-A.setNullSpace(nullspace)
-uh = dolfinx.fem.Function(V)
-ksp.solve(b, uh.x.petsc_vec)
-uh.x.scatter_forward()
-
-ksp.destroy()
-def compute_L2_error(uh: dolfinx.fem.Function) -> float:
-    mesh = uh.function_space.mesh
-    u_exact = u_ex(ufl, ufl.SpatialCoordinate(mesh))
-    error_L2 = dolfinx.fem.form(ufl.inner(uh - u_exact, uh - u_exact) * ufl.dx)
-    error_local = dolfinx.fem.assemble_scalar(error_L2)
-    return np.sqrt(mesh.comm.allreduce(error_local, op=MPI.SUM))
-print(f"Direct solver L2 error {compute_L2_error(uh):.5e}")
-u_exact = u_ex(ufl, ufl.SpatialCoordinate(V.mesh))
-ex_mean = V.mesh.comm.allreduce(
-    dolfinx.fem.assemble_scalar(dolfinx.fem.form(u_exact * ufl.dx)), op=MPI.SUM
+mesh_data = gmshio.read_from_msh("mesh.msh", comm, rank=0, gdim=2)
+mesh, cell_tags, facet_tags = (
+    mesh_data.mesh,
+    mesh_data.cell_tags,
+    mesh_data.facet_tags,
 )
-approx_mean = V.mesh.comm.allreduce(
-    dolfinx.fem.assemble_scalar(dolfinx.fem.form(uh * ufl.dx)), op=MPI.SUM
+
+V = fem.functionspace(mesh, ("Lagrange", 1))
+Q = fem.functionspace(mesh, ("DG", 0))
+k = fem.Function(Q)
+k.x.array[cell_tags.find(OMEGA_OUT)] = k_out
+k.x.array[cell_tags.find(OMEGA_IN)] = k_in
+
+fdim = mesh.topology.dim - 1
+mesh.topology.create_connectivity(fdim, mesh.topology.dim)
+
+def dirichlet(value, tag):
+  dofs = fem.locate_dofs_topological(V, fdim, facet_tags.find(tag))
+  return fem.dirichletbc(default_scalar_type(value), dofs, V)
+
+bcs = [dirichlet(1.0, GAMMA_L), dirichlet(0.0, GAMMA_R)]
+
+
+dx = ufl.Measure("dx", domain=mesh, subdomain_data=cell_tags)
+ds = ufl.Measure("ds", domain=mesh, subdomain_data=facet_tags)
+u, v = ufl.TrialFunction(V), ufl.TestFunction(V)
+
+alpha, g_B = 5.0, 0.0
+beta, u_T = 5.0, 5.5
+
+a = (
+    k * ufl.inner(ufl.grad(u), ufl.grad(v)) * dx
+    + alpha * u * v * ds(GAMMA_B)
+    + beta * u * v * ds(GAMMA_T)
 )
-print(f"Mean value of manufactured solution: {ex_mean}")
-print(f"Mean value of computed solution (direct solver): {approx_mean}")
-assert np.isclose(ex_mean, approx_mean), "Mean values do not match!"
+L = alpha * g_B * v * ds(GAMMA_B) + beta * u_T * v * ds(GAMMA_T)
+
+
+problem = LinearProblem(
+    a,
+    L,
+    bcs=bcs,
+    petsc_options={"ksp_type": "preonly", "pc_type": "lu"},
+)
+uh = problem.solve()
+uh.name = "u"
+k.name = "k"
+
+with io.XDMFFile(comm, "solution.xdmf", "w") as xdmf:
+  xdmf.write_mesh(mesh)
+  xdmf.write_meshtags(cell_tags, mesh.geometry)
+  xdmf.write_meshtags(facet_tags, mesh.geometry)
+  xdmf.write_function(k)
+  xdmf.write_function(uh)

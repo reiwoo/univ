@@ -39,7 +39,7 @@ ds = ufl.Measure("ds", domain=mesh, subdomain_data=facet_tags)
 u, v = ufl.TrialFunction(V), ufl.TestFunction(V)
 
 alpha, g_B = 5.0, 0.0
-beta, u_T = 5.0, 5.5
+beta, u_T = 5.0, 0.5
 
 a = (
     k * ufl.inner(ufl.grad(u), ufl.grad(v)) * dx

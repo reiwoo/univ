@@ -1,3 +1,5 @@
+//gmsh -2 mesh.geo -o mesh.msh
+
 lc  = 0.04;
 lci = 0.02;
 

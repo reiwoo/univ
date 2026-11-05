@@ -14,7 +14,7 @@ TEXT = "Hello Streamlit"
 def stream_data():
     for word in TEXT.split(" "):
         yield word + " "
-        time.sleep(1)
+        time.sleep(0.5)
 if st.button("Stream data"):
     st.write_stream(stream_data)
 

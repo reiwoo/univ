@@ -1,129 +1,118 @@
-import time
 import numpy as np
-import scipy.sparse as sp
+from time import perf_counter
 
-def dense_to_csr(A):
-    """CSR: val - значения, col - номера столбцов, ptr - начала строк (длина n+1)."""
-    n = A.shape[0]
-    val, col, ptr = [], [], [0]
-    for i in range(n):
-        nz = np.nonzero(A[i])[0]
-        val.extend(A[i, nz]); col.extend(nz)
-        ptr.append(len(val))
-    return np.array(val), np.array(col, dtype=int), np.array(ptr, dtype=int)
+rng = np.random.default_rng(0)
+np.set_printoptions(precision=1, suppress=True, linewidth=150)
 
-def dense_to_cslr(A):
-    """CSlR (симметричный портрет, ненулевая диагональ):
-       di  - диагональ,
-       ig  - начала строк нижнего треугольника (длина n+1),
-       jg  - столбцы нижнего треугольника,
-       ggl - значения нижнего треугольника,
-       ggu - значения верхнего треугольника (тот же портрет, транспонированный)."""
-    n = A.shape[0]
-    di = np.diag(A).copy()
-    ig, jg, ggl, ggu = [0], [], [], []
-    for i in range(n):
-        for j in np.nonzero(A[i, :i])[0]:
-            jg.append(j); ggl.append(A[i, j]); ggu.append(A[j, i])
-        ig.append(len(jg))
-    return di, np.array(ig), np.array(jg, dtype=int), np.array(ggl), np.array(ggu)
-
-
-def matvec_dense(A, x):
+def dense_matvec(A, x):
     n = len(x)
-    y = [0.0] * n
+    y = np.zeros(n)
     for i in range(n):
-        s = 0.0
-        row = A[i]
         for j in range(n):
-            s += row[j] * x[j]
-        y[i] = s
+            y[i] += A[i, j] * x[j]
     return y
 
-def matvec_csr(val, col, ptr, x):
+def CSR_from_dense(A):
+    n = A.shape[0]
+    values, cols, ptr = [], [], [0]
+    for i in range(n):
+        for j in range(n):
+            if A[i, j] != 0:
+                values.append(A[i, j])
+                cols.append(j)
+        ptr.append(len(values))
+    return np.array(values), np.array(cols), np.array(ptr)
+
+def CSR_matvec(values, cols, ptr, x):
     n = len(ptr) - 1
-    y = [0.0] * n
+    y = np.zeros(n)
     for i in range(n):
-        s = 0.0
         for k in range(ptr[i], ptr[i + 1]):
-            s += val[k] * x[col[k]]
-        y[i] = s
+            y[i] += values[k] * x[cols[k]]
     return y
 
-def matvec_cslr(di, ig, jg, ggl, ggu, x):
-    n = len(di)
-    y = [di[i] * x[i] for i in range(n)]
+def CSlR_from_dense(A):
+    n = A.shape[0]
+    diag = np.diag(A).copy()
+    lower, upper, cols, ptr = [], [], [], [0]
     for i in range(n):
-        xi = x[i]
-        s = 0.0
-        for k in range(ig[i], ig[i + 1]):
-            j = jg[k]
-            s += ggl[k] * x[j]       # элемент a[i, j] нижнего треугольника
-            y[j] += ggu[k] * xi      # элемент a[j, i] верхнего треугольника
-        y[i] += s
+        for j in range(i):
+            if A[i, j] != 0 or A[j, i] != 0:
+                lower.append(A[i, j])
+                upper.append(A[j, i])
+                cols.append(j)
+        ptr.append(len(lower))
+    return diag, np.array(lower), np.array(upper), np.array(cols), np.array(ptr)
+
+def CSlR_matvec(diag, lower, upper, cols, ptr, x):
+    n = len(diag)
+    y = diag * x
+    for i in range(n):
+        for k in range(ptr[i], ptr[i + 1]):
+            j = cols[k]
+            y[i] += lower[k] * x[j]
+            y[j] += upper[k] * x[i]
     return y
 
-
-def matvec_csr_np(val, col, rows, x, n):
-    return np.bincount(rows, weights=val * x[col], minlength=n)
-
-def matvec_cslr_np(di, jg, rows_l, ggl, ggu, x, n):
-    return (di * x + np.bincount(rows_l, weights=ggl * x[jg], minlength=n)
-                   + np.bincount(jg, weights=ggu * x[rows_l], minlength=n))
-
-
-def gen_nonsym(n, per_row, rng):
-    """Разреженная несимметричная матрица (~per_row ненулей на строку)."""
+def make_matrix(n, density, rng):
     A = np.zeros((n, n))
-    m = n * per_row
-    A[rng.integers(0, n, m), rng.integers(0, n, m)] = rng.uniform(-1, 1, m)
+    for i in range(n):
+        for j in range(n):
+            if rng.random() < density:
+                A[i, j] = rng.uniform(-5, 5)
+    for i in range(n):
+        A[i, i] = rng.uniform(1, 5)
     return A
 
-def gen_sym_portrait(n, per_row, rng):
-    """Симметричный портрет, ненулевая диагональ, значения несимметричны."""
+def make_sym_portrait_matrix(n, density, rng):
     A = np.zeros((n, n))
-    m = n * per_row // 2
-    i = rng.integers(0, n, m); j = rng.integers(0, n, m)
-    mask = i != j
-    i, j = i[mask], j[mask]
-    A[i, j] = rng.uniform(-1, 1, len(i))
-    A[j, i] = rng.uniform(-1, 1, len(i))
-    A[np.arange(n), np.arange(n)] = rng.uniform(1, 2, n)
+    for i in range(n):
+        A[i, i] = rng.uniform(1, 5)
+    for i in range(n):
+        for j in range(i):
+            if rng.random() < density:
+                val = rng.uniform(-5, 5)
+                A[i, j] = val
+                A[j, i] = val
     return A
 
-def best_time(f, min_total=0.2):
-    f()
-    reps, t = 1, 0.0
-    while True:
-        t0 = time.perf_counter()
-        for _ in range(reps):
-            f()
-        t = time.perf_counter() - t0
-        if t >= min_total:
-            return t / reps
-        reps *= 4
+def timer(f, repeats=3):
+    times = []
+    for _ in range(repeats):
+        t = perf_counter()
+        f()
+        times.append(perf_counter() - t)
+    return min(times) * 1000
 
-def run(sizes=(100, 200, 500, 1000, 2000), per_row=5, seed=0):
-    rng = np.random.default_rng(seed)
-    print("Время умножения матрицы на вектор, мс")
-    print(f"{'n':>5s} | {'плотная':>8s} {'CSR':>7s} {'выигрыш':>8s} | "
-          f"{'плотная':>8s} {'CSlR':>7s} {'выигрыш':>8s}")
-    for n in sizes:
-        x = rng.standard_normal(n)
-        xl = x.tolist()
-        res = []
-        for gen, to_fmt, mv in [(gen_nonsym, dense_to_csr, matvec_csr),
-                                (gen_sym_portrait, dense_to_cslr, matvec_cslr)]:
-            A = gen(n, per_row, rng)
-            fmt = to_fmt(A)
-            Al = A.tolist()
+for n in [10, 100, 300, 600, 900]:
+    density = 0.1 if n == 10 else 0.02
+    x = rng.uniform(-5, 5, n)
+    A = make_matrix(n, density, rng)
+    CSR = CSR_from_dense(A)
+    assert np.allclose(CSR_matvec(*CSR, x), A @ x)
 
-            assert np.allclose(mv(*fmt, xl), A @ x), "ошибка умножения"
-            t_d = best_time(lambda: matvec_dense(Al, xl))
-            t_s = best_time(lambda: mv(*fmt, xl))
-            res += [t_d * 1e3, t_s * 1e3, t_d / t_s]
-        print(f"{n:5d} | {res[0]:8.3f} {res[1]:7.3f} {res[2]:7.1f}x | "
-              f"{res[3]:8.3f} {res[4]:7.3f} {res[5]:7.1f}x")
+    B = make_sym_portrait_matrix(n, density, rng)
+    CSlR = CSlR_from_dense(B)
+    assert np.allclose(CSlR_matvec(*CSlR, x), B @ x)
 
-if __name__ == "__main__":
-    run()
+    if n == 10:
+        print("Матрица A (несимметричная):")
+        print(A)
+        print("CSR: values =", CSR[0])
+        print("     cols   =", CSR[1])
+        print("     ptr    =", CSR[2])
+        print("\nМатрица B (симметричный портрет):")
+        print(B)
+        print("CSlR: diag  =", CSlR[0])
+        print("      lower =", CSlR[1])
+        print("      upper =", CSlR[2])
+        print("      cols  =", CSlR[3])
+        print("      ptr   =", CSlR[4])
+        print()
+
+    print(f"n = {n}")
+    print(f"  CSR:  обычная = {timer(lambda: dense_matvec(A, x)):.3f} мс, "
+          f"CSR = {timer(lambda: CSR_matvec(*CSR, x)):.3f} мс")
+    print(f"  CSlR: обычная = {timer(lambda: dense_matvec(B, x)):.3f} мс, "
+          f"CSlR = {timer(lambda: CSlR_matvec(*CSlR, x)):.3f} мс")
+    print()
